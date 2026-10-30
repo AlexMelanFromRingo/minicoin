@@ -5,11 +5,12 @@
 # minicoin
 
 **Минимальная, но настоящая криптовалюта. Код читается за вечер.**<br>
-Две независимые реализации одного протокола — на Rust и на Python — в одной сети.
+Три независимые реализации одного протокола — на Rust, Python и Go — в одной сети.
 
 [![CI](https://github.com/AlexMelanFromRingo/minicoin/actions/workflows/ci.yml/badge.svg)](https://github.com/AlexMelanFromRingo/minicoin/actions/workflows/ci.yml)
-![Rust](https://img.shields.io/badge/Rust-~2.2k_строк-b7410e?logo=rust&logoColor=white)
+![Rust](https://img.shields.io/badge/Rust-~2.3k_строк-b7410e?logo=rust&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-~1.8k_строк-3776ab?logo=python&logoColor=white)
+![Go](https://img.shields.io/badge/Go-~2.9k_строк-00add8?logo=go&logoColor=white)
 ![deps](https://img.shields.io/badge/зависимости-только_криптопримитивы-2ea44f)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -28,15 +29,16 @@
 всё, что и есть криптовалюта, — формат байтов, UTXO, валидация, PoW,
 сложность, сеть — написано здесь. Из библиотек взяты только хеш и подпись.
 
-|  | 🦀 Rust (`rust/`) | 🐍 Python (`python/`) |
-|---|---|---|
-| Размер | ≈ 2 150 строк без тестов | ≈ 1 750 строк |
-| Зависимости | `blake3`, `ed25519-dalek`, `getrandom` | `blake3`, `pynacl` |
-| Тесты | 34 | 19 |
+|  | 🦀 Rust (`rust/`) | 🐍 Python (`python/`) | 🐹 Go (`go/`) |
+|---|---|---|---|
+| Размер (без тестов) | ≈ 2 300 строк | ≈ 1 850 строк | ≈ 2 850 строк |
+| Зависимости | `blake3`, `ed25519-dalek`, `getrandom` | `blake3`, `pynacl` | `lukechampine.com/blake3` (Ed25519 — из стандартной библиотеки) |
+| Тесты | 34 | 19 | 36 |
 
 Реализации совместимы байт в байт: блок, найденный Python-майнером,
-принимает Rust-узел, и наоборот. Это проверяют общие векторы
-[vectors.txt](vectors.txt), и в CI обе реализации сверяются с ними.
+принимает Rust-узел, блок Go-майнера — оба других, и наоборот. Это проверяют
+общие векторы [vectors.txt](vectors.txt), и в CI все три реализации сверяются
+с ними.
 
 ## 🧩 Что внутри
 
@@ -76,8 +78,8 @@ flowchart LR
     style chain fill:#f2b632,stroke:#9a6710,color:#000
 ```
 
-Файлы в `rust/src/` и `python/minicoin/` называются одинаково и устроены
-одинаково, их удобно читать параллельно. Самое главное — `chain`: правила
+Файлы в `rust/src/`, `python/minicoin/` и `go/` называются одинаково и
+устроены одинаково, их удобно читать параллельно. Самое главное — `chain`: правила
 траты (`check_tx`), применение блока и реорганизация.
 
 ## 🚀 Запуск
@@ -90,6 +92,10 @@ alias mc=./target/release/minicoin
 # или Python
 cd python && uv venv && uv pip install -e .
 alias mc="python -m minicoin"
+
+# или Go
+cd go && go build ./cmd/minicoin
+alias mc=./minicoin
 ```
 
 Сеть из двух узлов на одной машине:
@@ -140,6 +146,7 @@ mc bump <txid>                            # 0.00000200 → 0.00000400, стар�
 ```bash
 cd rust && cargo test            # 34 теста
 cd python && pytest              # 19 тестов, включая сверку с vectors.txt
+cd go && go test ./...           # 36 тестов, включая сверку с vectors.txt
 ```
 
 ## Что дальше

@@ -135,7 +135,8 @@ def format_amount(units: int) -> str:
 
 def parse_amount(text: str) -> int:
     """"1.5" → 150 000 000 единиц. Без float: деньги не округляют."""
-    match = re.fullmatch(r"(\d*)(?:\.(\d{0,8}))?", text)
+    # [0-9], а не \d: \d в Python пропускает любые цифры Юникода («١» = 1).
+    match = re.fullmatch(r"([0-9]*)(?:\.([0-9]{0,8}))?", text)
     if not match or not (match.group(1) or match.group(2)):
         raise ValueError(f"не сумма: {text}")
     whole = int(match.group(1) or 0)

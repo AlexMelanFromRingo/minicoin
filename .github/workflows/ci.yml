@@ -1,4 +1,4 @@
-# CI: обе реализации проходят свои тесты и выдают одинаковые векторы.
+# CI: все три реализации проходят свои тесты и выдают одинаковые векторы.
 name: ci
 on: [push, pull_request]
 jobs:
@@ -21,3 +21,14 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: pytest -q
       - run: python -m minicoin vectors | diff -u ../vectors.txt -
+  go:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: go } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go/go.mod }
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go run ./cmd/minicoin vectors | diff -u ../vectors.txt -

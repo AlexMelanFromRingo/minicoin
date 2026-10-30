@@ -24,7 +24,7 @@ def test_amounts():
     assert parse_amount("1.5") == 150_000_000
     assert parse_amount(".5") == 50_000_000
     assert parse_amount("0.00000001") == 1
-    for bad in ("1.000000001", "-1", "", "."):
+    for bad in ("1.000000001", "-1", "", ".", "١", "1.٥"):
         with pytest.raises(ValueError):
             parse_amount(bad)
     assert format_amount(150_000_001) == "1.50000001"

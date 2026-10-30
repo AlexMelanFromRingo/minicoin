@@ -50,7 +50,8 @@ pub fn to_hex(bytes: &[u8]) -> String {
 }
 
 pub fn from_hex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
+    // Только 0-9a-fA-F: from_str_radix сам пропустил бы знак «+» («+f» = 0x0f).
+    if !text.len().is_multiple_of(2) || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     (0..text.len()).step_by(2).map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok()).collect()
@@ -75,5 +76,6 @@ mod tests {
         assert_eq!(from_hex(&to_hex(&[0, 1, 254, 255])), Some(vec![0, 1, 254, 255]));
         assert_eq!(from_hex("abc"), None);
         assert_eq!(from_hex("zz"), None);
+        assert_eq!(from_hex("+f+f"), None);
     }
 }

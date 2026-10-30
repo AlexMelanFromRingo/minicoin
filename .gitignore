@@ -5,3 +5,4 @@ __pycache__/
 data/
 *.key
 .pytest_cache/
+/go/minicoin
