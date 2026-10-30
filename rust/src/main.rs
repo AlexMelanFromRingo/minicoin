@@ -97,7 +97,9 @@ fn run() -> Result<(), String> {
         }
         Some("balance") => {
             let owner = crypto::public_key(&wallet::load(&wallet_path)?);
-            let Message::Utxos { height, utxos } = wallet::request(&node_addr, &Message::GetUtxos { owner })? else {
+            let Message::Utxos { height, utxos } =
+                wallet::request(&node_addr, &Message::GetUtxos { owner, include_mempool_spent: false })?
+            else {
                 return Err("неожиданный ответ узла".into());
             };
             let (mut spendable, mut immature) = (0, 0);
@@ -119,7 +121,9 @@ fn run() -> Result<(), String> {
             let fee = wallet::parse_amount(&args.get("fee", "0.0001"))?;
             let seed = wallet::load(&wallet_path)?;
             let owner = crypto::public_key(&seed);
-            let Message::Utxos { height, utxos } = wallet::request(&node_addr, &Message::GetUtxos { owner })? else {
+            let Message::Utxos { height, utxos } =
+                wallet::request(&node_addr, &Message::GetUtxos { owner, include_mempool_spent: false })?
+            else {
                 return Err("неожиданный ответ узла".into());
             };
             let tx = wallet::build_payment(&seed, &utxos, height, to, amount, fee)?;
@@ -134,19 +138,27 @@ fn run() -> Result<(), String> {
                 .and_then(|b| b.try_into().ok())
                 .ok_or("txid — 64 hex-символа")?;
             let seed = wallet::load(&wallet_path)?;
-            let (old_fee, stuck) = match wallet::request(&node_addr, &Message::GetMempoolTx { txid })? {
-                Message::MempoolTx { fee, tx } => (fee, tx),
+            // Комиссию из ответа узла не берём: кошелёк посчитает её сам.
+            let stuck = match wallet::request(&node_addr, &Message::GetMempoolTx { txid })? {
+                Message::MempoolTx { tx, .. } => tx,
                 Message::Text(text) => return Err(text),
                 other => return Err(format!("неожиданный ответ узла: {other:?}")),
             };
             if stuck.txid() != txid {
                 return Err("узел прислал не ту транзакцию".into());
             }
-            let new_fee = match args.options.get("fee") {
-                Some(_) => wallet::parse_amount(&args.get("fee", ""))?,
-                None => wallet::default_bump_fee(old_fee, stuck.size()),
+            // Входы застрявшей транзакции уже потрачены в мемпуле, поэтому просим
+            // и такие выходы. Суммам узла не верим: bump_payment сверит их с подписями.
+            let owner = crypto::public_key(&seed);
+            let request = Message::GetUtxos { owner, include_mempool_spent: true };
+            let Message::Utxos { utxos, .. } = wallet::request(&node_addr, &request)? else {
+                return Err("неожиданный ответ узла".into());
             };
-            let tx = wallet::bump_payment(&seed, &stuck, old_fee, new_fee)?;
+            let new_fee = match args.options.get("fee") {
+                Some(_) => Some(wallet::parse_amount(&args.get("fee", ""))?),
+                None => None,
+            };
+            let (tx, old_fee, new_fee) = wallet::bump_payment(&seed, &stuck, &utxos, new_fee)?;
             println!("комиссия: {} → {}", wallet::format_amount(old_fee), wallet::format_amount(new_fee));
             println!("txid: {}", crypto::to_hex(&tx.txid()));
             match wallet::request(&node_addr, &Message::Tx(tx))? {

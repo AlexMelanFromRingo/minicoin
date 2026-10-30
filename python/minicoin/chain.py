@@ -218,17 +218,22 @@ class Chain:
         consensus.check_tx_structure(tx)
         if height > tx.expiry_height:
             raise Invalid("срок действия истёк (expiry_height)")
-        sighash = tx.sighash()
-        input_sum = 0
+        # Сначала находим все тратимые выходы: подпись покрывает их суммы и
+        # владельцев, поэтому sighash можно посчитать только после этого.
+        spent = []
         for tx_in in tx.inputs:
             entry = self.utxo.get(tx_in.prev)
             if entry is None:
                 raise Invalid("вход ссылается на несуществующий или потраченный выход")
             if entry.coinbase and height - entry.height < consensus.COINBASE_MATURITY:
                 raise Invalid("награда за блок ещё не созрела")
-            if not crypto.verify(entry.output.owner, sighash, tx_in.signature):
+            spent.append(entry.output)
+        sighash = tx.sighash(spent)
+        input_sum = 0
+        for tx_in, out in zip(tx.inputs, spent):
+            if not crypto.verify(out.owner, sighash, tx_in.signature):
                 raise Invalid("неверная подпись")
-            input_sum += entry.output.amount
+            input_sum += out.amount
         if input_sum < tx.output_sum():
             raise Invalid("выходов больше, чем входов")
         return input_sum - tx.output_sum()

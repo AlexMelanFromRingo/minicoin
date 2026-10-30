@@ -285,17 +285,23 @@ impl Chain {
         if height > tx.expiry_height {
             return Err("срок действия истёк (expiry_height)".into());
         }
-        let sighash = tx.sighash();
-        let mut input_sum: u64 = 0;
+        // Сначала находим все тратимые выходы: подпись покрывает их суммы и
+        // владельцев, поэтому sighash можно посчитать только после этого.
+        let mut spent = Vec::with_capacity(tx.inputs.len());
         for input in &tx.inputs {
             let entry = self.utxo.get(&input.prev).ok_or("вход ссылается на несуществующий или потраченный выход")?;
             if entry.coinbase && height.saturating_sub(entry.height) < COINBASE_MATURITY {
                 return Err("награда за блок ещё не созрела".into());
             }
-            if !crypto::verify(&entry.output.owner, &sighash, &input.signature) {
+            spent.push(entry.output.clone());
+        }
+        let sighash = tx.sighash(&spent);
+        let mut input_sum: u64 = 0;
+        for (input, output) in tx.inputs.iter().zip(&spent) {
+            if !crypto::verify(&output.owner, &sighash, &input.signature) {
                 return Err("неверная подпись".into());
             }
-            input_sum = input_sum.checked_add(entry.output.amount).ok_or("переполнение суммы входов")?;
+            input_sum = input_sum.checked_add(output.amount).ok_or("переполнение суммы входов")?;
         }
         let output_sum = tx.output_sum().ok_or("переполнение суммы выходов")?;
         input_sum.checked_sub(output_sum).ok_or_else(|| "выходов больше, чем входов".into())
@@ -423,13 +429,18 @@ mod tests {
         chain.add_block(block, NOW)
     }
 
+    /// Что тратит `from`, по его мнению: монеты в этих тестах — его награда за блок 1.
+    fn reward_of(from: &Miner) -> [TxOut; 1] {
+        [TxOut { amount: block_reward(1), owner: from.key }]
+    }
+
     fn pay(from: &Miner, prev: OutPoint, amount: u64, to: &PublicKey) -> Transaction {
         let mut tx = Transaction {
             inputs: vec![TxIn { prev, signature: [0; 64] }],
             outputs: vec![TxOut { amount, owner: *to }],
             expiry_height: 1000,
         };
-        tx.sign(&from.seed);
+        tx.sign(&from.seed, &reward_of(from));
         tx
     }
 
@@ -486,8 +497,27 @@ mod tests {
         // Истёкшая.
         let mut expired = pay(&alice, coin, 1, &bob.key);
         expired.expiry_height = h - 1;
-        expired.sign(&alice.seed);
+        expired.sign(&alice.seed, &reward_of(&alice));
         assert!(chain.check_tx(&expired, h).unwrap_err().contains("срок"));
+    }
+
+    #[test]
+    fn rejects_signature_over_wrong_amount() {
+        let (alice, bob) = (miner(), miner());
+        let (chain, coin) = chain_with_coins(&alice);
+        let h = chain.height() + 1;
+        assert_eq!(
+            chain.check_tx(&pay(&alice, coin, consensus::COIN, &bob.key), h),
+            Ok(block_reward(1) - consensus::COIN)
+        );
+
+        // Узел соврал кошельку, что вход меньше на монету, и кошелёк подписал
+        // эту сумму. Сеть такую подпись отвергает: деньги, которые кошелёк
+        // недосчитал, не уйдут майнеру в комиссию.
+        let lied = [TxOut { amount: block_reward(1) - consensus::COIN, owner: alice.key }];
+        let mut tx = pay(&alice, coin, consensus::COIN, &bob.key);
+        tx.sign(&alice.seed, &lied);
+        assert_eq!(chain.check_tx(&tx, h), Err("неверная подпись".into()));
     }
 
     #[test]

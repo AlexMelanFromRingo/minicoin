@@ -45,6 +45,9 @@ class TxMsg:
 @dataclass
 class GetUtxos:
     owner: bytes
+    # Выходы, уже потраченные транзакциями мемпула, узел показывает только по
+    # этому флагу: они нужны bump, чтобы узнать, что тратит застрявшая транзакция.
+    include_mempool_spent: bool = False
 
 
 @dataclass
@@ -74,7 +77,7 @@ class GetMempoolTx:  # кошелёк: транзакция из мемпула 
 
 
 @dataclass
-class MempoolTx:  # транзакция мемпула и её комиссия (входы кошельку не видны)
+class MempoolTx:  # транзакция мемпула и её комиссия (кошелёк ей не верит, см. bump)
     fee: int
     tx: Transaction
 
@@ -101,8 +104,9 @@ def payload(msg: Message) -> bytes:
             w.raw(block.to_bytes())
         case TxMsg(tx):
             tx.write(w)
-        case GetUtxos(owner):
+        case GetUtxos(owner, include_mempool_spent):
             w.raw(owner)
+            w.u8(int(include_mempool_spent))
         case Utxos(height, utxos):
             w.u32(height)
             w.u32(len(utxos))
@@ -140,7 +144,7 @@ def parse(kind: int, data: bytes) -> Message:
     elif kind == 2:
         msg = GetBlocks([r.raw(32) for _ in range(r.u16())])
     elif kind == 5:
-        msg = GetUtxos(r.raw(32))
+        msg = GetUtxos(r.raw(32), r.u8() != 0)
     elif kind == 6:
         height = r.u32()
         utxos = []

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"math/bits"
 	"net"
 	"os"
 	"slices"
@@ -98,12 +99,14 @@ func BuildPayment(seed Seed, utxos []Utxo, tipHeight uint32, to PublicKey, amoun
 	})
 
 	var inputs []TxIn
+	var spent []TxOut
 	var total uint64
 	for _, u := range spendable {
 		if total >= need {
 			break
 		}
 		inputs = append(inputs, TxIn{Prev: u.OutPoint})
+		spent = append(spent, u.Entry.Output)
 		total += u.Entry.Output.Amount
 	}
 	if total < need {
@@ -115,7 +118,8 @@ func BuildPayment(seed Seed, utxos []Utxo, tipHeight uint32, to PublicKey, amoun
 		outputs = append(outputs, TxOut{Amount: change, Owner: PublicKeyOf(seed)})
 	}
 	tx := Transaction{Inputs: inputs, Outputs: outputs, ExpiryHeight: nextHeight + ExpiryWindow}
-	tx.Sign(seed)
+	// Суммы входов подписаны: если узел их занизил, подпись выйдет неверной.
+	tx.Sign(seed, spent)
 	return tx, nil
 }
 
@@ -132,24 +136,55 @@ func DefaultBumpFee(oldFee uint64, size int) uint64 {
 // BumpPayment — замена застрявшего платежа (replace-by-fee): те же входы и
 // тот же получатель, а прибавка к комиссии берётся из сдачи. Получатель
 // получит ровно столько же; если сдачи не хватает, замена невозможна.
-func BumpPayment(seed Seed, stuck Transaction, oldFee, newFee uint64) (Transaction, error) {
-	if newFee <= oldFee {
-		return Transaction{}, fmt.Errorf("новая комиссия должна быть больше старой (%s)", FormatAmount(oldFee))
-	}
-	// Узлу не доверяем: он мог прислать чужую транзакцию, которая тратит наши
-	// выходы на его адрес. Переподписываем только то, что уже подписали сами:
-	// подпись покрывает все выходы (sighash), значит, получатель и суммы те же.
+//
+// utxos — выходы кошелька от узла, включая уже потраченные в мемпуле (среди
+// них — входы stuck). fee = 0 — комиссия по умолчанию (DefaultBumpFee).
+// Возвращает замену, старую и новую комиссии.
+func BumpPayment(seed Seed, stuck Transaction, utxos []Utxo, fee uint64) (tx Transaction, oldFee, newFee uint64, err error) {
+	// Узлу не доверяем. Он мог прислать чужую транзакцию, которая тратит наши
+	// выходы на его адрес, или занизить суммы входов, чтобы мы переплатили
+	// комиссию. Подпись покрывает все выходы и суммы с владельцами входов
+	// (sighash), поэтому переподписываем, только если все подписи сходятся
+	// с тем, что прислал узел: значит, это наша транзакция, и суммы входов
+	// те самые, что мы подписывали.
 	me := PublicKeyOf(seed)
-	sighash := stuck.Sighash()
+	spent := make([]TxOut, 0, len(stuck.Inputs))
+	for _, input := range stuck.Inputs {
+		i := slices.IndexFunc(utxos, func(u Utxo) bool { return u.OutPoint == input.Prev })
+		if i < 0 {
+			return Transaction{}, 0, 0, fmt.Errorf("узел не прислал вход %s:%d — заменять не буду", ToHex(input.Prev.Txid[:]), input.Prev.Index)
+		}
+		spent = append(spent, utxos[i].Entry.Output)
+	}
+	sighash := stuck.Sighash(spent)
 	signedByMe := len(stuck.Inputs) > 0
 	for _, input := range stuck.Inputs {
 		signedByMe = signedByMe && Verify(me, sighash, input.Signature)
 	}
 	if !signedByMe {
-		return Transaction{}, errors.New("эту транзакцию подписывал не этот кошелёк — заменять не буду")
+		return Transaction{}, 0, 0, errors.New("подписи не сходятся: узел прислал не ту транзакцию или неверные суммы входов")
+	}
+	// Комиссию считаем сами: суммы входов теперь проверены подписями.
+	var inputSum, carry uint64
+	for _, output := range spent {
+		if inputSum, carry = bits.Add64(inputSum, output.Amount, 0); carry != 0 {
+			return Transaction{}, 0, 0, errors.New("переполнение суммы входов")
+		}
+	}
+	outputSum, ok := stuck.OutputSum()
+	if !ok || inputSum < outputSum {
+		return Transaction{}, 0, 0, errors.New("суммы входов и выходов не сходятся")
+	}
+	oldFee = inputSum - outputSum
+	newFee = fee
+	if newFee == 0 {
+		newFee = DefaultBumpFee(oldFee, stuck.Size())
+	}
+	if newFee <= oldFee {
+		return Transaction{}, 0, 0, fmt.Errorf("новая комиссия должна быть больше старой (%s)", FormatAmount(oldFee))
 	}
 	// Копия: срезы входов и выходов не должны делиться со старой транзакцией.
-	tx := Transaction{
+	tx = Transaction{
 		Inputs:       slices.Clone(stuck.Inputs),
 		Outputs:      slices.Clone(stuck.Outputs),
 		ExpiryHeight: stuck.ExpiryHeight,
@@ -162,7 +197,7 @@ func BumpPayment(seed Seed, stuck Transaction, oldFee, newFee uint64) (Transacti
 		}
 	}
 	if change < 0 || len(tx.Outputs) < 2 {
-		return Transaction{}, errors.New("в транзакции нет сдачи, из которой можно доплатить комиссию")
+		return Transaction{}, 0, 0, errors.New("в транзакции нет сдачи, из которой можно доплатить комиссию")
 	}
 	switch amount := tx.Outputs[change].Amount; {
 	case amount > extra:
@@ -171,10 +206,10 @@ func BumpPayment(seed Seed, stuck Transaction, oldFee, newFee uint64) (Transacti
 		// Сдача уходит целиком: выход исчезает, транзакция становится короче.
 		tx.Outputs = slices.Delete(tx.Outputs, change, change+1)
 	default:
-		return Transaction{}, fmt.Errorf("сдачи %s не хватает на прибавку к комиссии %s", FormatAmount(amount), FormatAmount(extra))
+		return Transaction{}, 0, 0, fmt.Errorf("сдачи %s не хватает на прибавку к комиссии %s", FormatAmount(amount), FormatAmount(extra))
 	}
-	tx.Sign(seed)
-	return tx, nil
+	tx.Sign(seed, spent)
+	return tx, oldFee, newFee, nil
 }
 
 // Request — запрос к узлу: отправить сообщение и дождаться ответа.

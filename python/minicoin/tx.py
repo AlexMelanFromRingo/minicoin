@@ -91,16 +91,27 @@ class Transaction:
         """Идентификатор — хеш всех байтов транзакции, включая подписи."""
         return crypto.hash(self.to_bytes())
 
-    def sighash(self) -> bytes:
-        """Что подписывают владельцы входов: хеш с обнулёнными подписями.
-        Подпись покрывает все входы, выходы и срок действия."""
+    def sighash(self, spent: list[TxOut]) -> bytes:
+        """Что подписывают владельцы входов: хеш с обнулёнными подписями, а за
+        ним сумма и владелец каждого тратимого выхода (spent[i] — выход, который
+        тратит вход i). Подпись покрывает все входы, выходы и срок действия.
+
+        Сумм тратимых выходов в байтах транзакции нет: кошелёк узнаёт их у
+        узла. Раз они подписаны, узлу не нужно верить. Если он занизил сумму
+        входа, кошелёк подпишет не те суммы, и сеть отвергнет подпись, а не
+        заберёт разницу в комиссию майнеру (как BIP143 в Bitcoin)."""
+        assert len(spent) == len(self.inputs), "нужен ровно один тратимый выход на каждый вход"
         w = Writer()
         self.write(w, with_signatures=False)
+        for out in spent:
+            w.u64(out.amount)
+            w.raw(out.owner)
         return crypto.hash(bytes(w.bytes))
 
-    def sign(self, seed: bytes) -> None:
-        """Подписать все входы одним ключом (кошелёк minicoin — один ключ)."""
-        signature = crypto.sign(seed, self.sighash())
+    def sign(self, seed: bytes, spent: list[TxOut]) -> None:
+        """Подписать все входы одним ключом (кошелёк minicoin — один ключ).
+        spent — выходы, которые тратят входы, по порядку (см. sighash)."""
+        signature = crypto.sign(seed, self.sighash(spent))
         for tx_in in self.inputs:
             tx_in.signature = signature
 

@@ -50,7 +50,7 @@ def test_messages_roundtrip():
         net.GetBlocks([bytes([1] * 32), bytes([2] * 32)]),
         net.BlockMsg(consensus.genesis_block()),
         net.TxMsg(Transaction([], [TxOut(5 * COIN, bytes(32))], 3)),
-        net.GetUtxos(bytes([4] * 32)),
+        net.GetUtxos(bytes([4] * 32), True),
         net.Utxos(3, [(OutPoint(bytes([5] * 32), 1), entry)]),
         net.GetBlock(2),
         net.GetInfo(),
@@ -64,24 +64,32 @@ def test_messages_roundtrip():
         assert net.parse(frame[4], frame[9:]) == msg
 
 
+def coin(amount: int) -> tuple[OutPoint, UtxoEntry]:
+    return OutPoint(bytes([1] * 32), 0), UtxoEntry(TxOut(amount, bytes(32)), 1, False)
+
+
 def test_bump_takes_extra_fee_from_change():
     from minicoin import crypto
     from minicoin.wallet import build_payment, bump_payment, default_bump_fee
 
     seed = crypto.new_seed()
-    utxos = [(OutPoint(bytes([1] * 32), 0), UtxoEntry(TxOut(10 * COIN, bytes(32)), 1, False))]
+    utxos = [coin(10 * COIN)]
     stuck = build_payment(seed, utxos, 100, bytes([9] * 32), 4 * COIN, 200)
     fee = default_bump_fee(200, stuck.size())
     assert fee == 400
-    bumped = bump_payment(seed, stuck, 200, fee)
+    bumped, old_fee, new_fee = bump_payment(seed, stuck, utxos)
+    assert (old_fee, new_fee) == (200, fee), "старую комиссию кошелёк считает сам"
     assert bumped.inputs[0].prev == stuck.inputs[0].prev
     assert bumped.outputs[0] == stuck.outputs[0]
     assert bumped.outputs[1].amount == stuck.outputs[1].amount - 200
-    assert bumped.sighash() != stuck.sighash(), "изменилась сдача — значит, нужна новая подпись"
-    assert crypto.verify(crypto.public_key(seed), bumped.sighash(), bumped.inputs[0].signature)
+    spent = [utxos[0][1].output]
+    assert bumped.sighash(spent) != stuck.sighash(spent), "изменилась сдача — значит, нужна новая подпись"
+    assert crypto.verify(crypto.public_key(seed), bumped.sighash(spent), bumped.inputs[0].signature)
     with pytest.raises(ValueError):
-        bump_payment(seed, stuck, 200, 7 * COIN)
-    assert len(bump_payment(seed, stuck, 200, 6 * COIN).outputs) == 1
+        bump_payment(seed, stuck, utxos, 100)
+    with pytest.raises(ValueError):
+        bump_payment(seed, stuck, utxos, 7 * COIN)
+    assert len(bump_payment(seed, stuck, utxos, 6 * COIN)[0].outputs) == 1
 
 
 def test_bump_refuses_transaction_it_did_not_sign():
@@ -89,17 +97,56 @@ def test_bump_refuses_transaction_it_did_not_sign():
     from minicoin.wallet import build_payment, bump_payment
 
     seed = crypto.new_seed()
-    utxos = [(OutPoint(bytes([1] * 32), 0), UtxoEntry(TxOut(10 * COIN, bytes(32)), 1, False))]
+    utxos = [coin(10 * COIN)]
     stuck = build_payment(seed, utxos, 100, bytes([9] * 32), 4 * COIN, 200)
     # Узел подменил получателя: наши входы, но деньги — ему.
     forged = Transaction.from_bytes(stuck.to_bytes())
     forged.outputs[0].owner = bytes([66] * 32)
     with pytest.raises(ValueError):
-        bump_payment(seed, forged, 200, 400)
+        bump_payment(seed, forged, utxos, 400)
     # Чужая транзакция целиком: подписи не нашим ключом.
     stranger = build_payment(crypto.new_seed(), utxos, 100, bytes([9] * 32), COIN, 200)
     with pytest.raises(ValueError):
-        bump_payment(seed, stranger, 200, 400)
+        bump_payment(seed, stranger, utxos, 400)
+    # Узел не показал, что тратит транзакция.
+    with pytest.raises(ValueError, match="не прислал вход"):
+        bump_payment(seed, stuck, [], 400)
+
+
+def test_bump_refuses_when_node_lies_about_input_amount():
+    from minicoin import crypto
+    from minicoin.wallet import build_payment, bump_payment
+
+    seed = crypto.new_seed()
+    stuck = build_payment(seed, [coin(10 * COIN)], 100, bytes([9] * 32), 4 * COIN, 200)
+    # Узел занизил вход на монету. Поверь кошелёк — он решил бы, что старая
+    # комиссия на монету меньше, и переплатил бы. Но подпись не сходится.
+    with pytest.raises(ValueError, match="подписи не сходятся"):
+        bump_payment(seed, stuck, [coin(9 * COIN)])
+    # Чужой владелец входа тоже не проходит.
+    op, _ = coin(10 * COIN)
+    with pytest.raises(ValueError, match="подписи не сходятся"):
+        bump_payment(seed, stuck, [(op, UtxoEntry(TxOut(10 * COIN, bytes([7] * 32)), 1, False))])
+
+
+def test_signature_covers_spent_outputs():
+    from minicoin import crypto
+    from minicoin.tx import TxIn
+
+    seed = crypto.new_seed()
+    key = crypto.public_key(seed)
+    tx = Transaction([TxIn(OutPoint(bytes([1] * 32), 3))], [TxOut(5, bytes([2] * 32))], 100)
+    txid, sighash = tx.txid(), tx.sighash([TxOut(7, key)])
+    tx.sign(seed, [TxOut(7, key)])
+    assert tx.txid() != txid and tx.sighash([TxOut(7, key)]) == sighash
+
+    def verify(spent: list[TxOut]) -> bool:
+        return crypto.verify(key, tx.sighash(spent), tx.inputs[0].signature)
+
+    assert verify([TxOut(7, key)])
+    # Та же транзакция, но узел назвал другую сумму или другого владельца входа.
+    assert not verify([TxOut(6, key)]), "сумма подписана"
+    assert not verify([TxOut(7, bytes([2] * 32))]), "владелец подписан"
 
 
 def test_wallet_file_is_private_and_never_overwritten(tmp_path):

@@ -85,7 +85,8 @@ def explain_block(block: Block, height: int) -> str:
         e.field(u32(tx.expiry_height), "expiry_height", expiry)
         e.note(f"txid = BLAKE3(байты транзакции) = {tx.txid().hex()}")
         if not tx.is_coinbase():
-            e.note(f"sighash = BLAKE3(те же байты, подписи заменены нулями) = {tx.sighash().hex()}")
+            # Тратимых выходов в блоке нет, поэтому значение sighash здесь не посчитать.
+            e.note("sighash = BLAKE3(эти байты с нулевыми подписями ‖ сумма и владелец каждого тратимого выхода)")
 
     if height > 0:
         e.lines.append(
@@ -118,9 +119,13 @@ def test_vectors() -> str:
         [TxOut(1_250_000_000, crypto.public_key(bytes([2] * 32))), TxOut(3_749_990_000, key)],
         100,
     )
-    tx.sign(seed)
+    # Вход тратит выход 0 coinbase генезиса как 50 монет на key:
+    # выходы 4 999 990 000 + комиссия 10 000 = 5 000 000 000.
+    spent = [TxOut(5_000_000_000, key)]
+    tx.sign(seed, spent)
     put("tx", tx.to_bytes().hex())
-    put("tx_sighash", tx.sighash().hex())
+    put("tx_spent_amount", str(spent[0].amount))
+    put("tx_sighash", tx.sighash(spent).hex())
     put("tx_txid", tx.txid().hex())
 
     leaves = [crypto.hash(x) for x in (b"a", b"b", b"c", b"d", b"e")]

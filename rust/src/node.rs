@@ -236,10 +236,16 @@ impl Node {
                 }
                 Err(error) => response.reply.push(Message::Text(format!("отклонена: {error}"))),
             },
-            Message::GetUtxos { owner } => {
+            Message::GetUtxos { owner, include_mempool_spent } => {
                 // Выходы, уже потраченные транзакциями мемпула, не показываем:
-                // иначе кошелёк попытается потратить их второй раз.
-                let utxos = st.chain.utxos_of(&owner).into_iter().filter(|(o, _)| !st.mempool.is_spent(o)).collect();
+                // иначе кошелёк попытается потратить их второй раз. Их просит
+                // только `bump`, чтобы узнать суммы входов застрявшей транзакции.
+                let utxos = st
+                    .chain
+                    .utxos_of(&owner)
+                    .into_iter()
+                    .filter(|(o, _)| include_mempool_spent || !st.mempool.is_spent(o))
+                    .collect();
                 response.reply.push(Message::Utxos { height: st.chain.height(), utxos });
             }
             Message::GetBlock { height } => response.reply.push(match st.chain.block_at(height) {

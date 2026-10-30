@@ -42,16 +42,37 @@ func TestTxRejectsTrailingBytes(t *testing.T) {
 
 func TestSignatureChangesTxidButNotSighash(t *testing.T) {
 	seed := NewSeed()
+	spent := []TxOut{{Amount: 7, Owner: PublicKeyOf(seed)}}
 	tx := sampleTx()
-	txid, sighash := tx.Txid(), tx.Sighash()
-	tx.Sign(seed)
+	txid, sighash := tx.Txid(), tx.Sighash(spent)
+	tx.Sign(seed, spent)
 	if tx.Txid() == txid {
 		t.Fatal("подпись не изменила txid")
 	}
-	if tx.Sighash() != sighash {
+	if tx.Sighash(spent) != sighash {
 		t.Fatal("подпись изменила sighash")
 	}
 	if !Verify(PublicKeyOf(seed), sighash, tx.Inputs[0].Signature) {
 		t.Fatal("подпись не проверяется")
+	}
+}
+
+func TestSignatureCoversSpentOutputs(t *testing.T) {
+	seed := NewSeed()
+	key := PublicKeyOf(seed)
+	tx := sampleTx()
+	tx.Sign(seed, []TxOut{{Amount: 7, Owner: key}})
+	verify := func(spent TxOut) bool {
+		return Verify(key, tx.Sighash([]TxOut{spent}), tx.Inputs[0].Signature)
+	}
+	if !verify(TxOut{Amount: 7, Owner: key}) {
+		t.Fatal("подпись не проверяется")
+	}
+	// Та же транзакция, но узел назвал другую сумму или другого владельца входа.
+	if verify(TxOut{Amount: 6, Owner: key}) {
+		t.Fatal("сумма не подписана")
+	}
+	if verify(TxOut{Amount: 7, Owner: filled[PublicKey](2)}) {
+		t.Fatal("владелец не подписан")
 	}
 }

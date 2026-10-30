@@ -107,17 +107,30 @@ impl Transaction {
     }
 
     /// То, что подписывают владельцы входов: хеш транзакции с обнулёнными
-    /// подписями. Подпись покрывает все входы, все выходы и срок действия,
-    /// поэтому изменить в подписанной транзакции ничего нельзя.
-    pub fn sighash(&self) -> Hash {
+    /// подписями, а за ним сумма и владелец каждого тратимого выхода
+    /// (`spent[i]` — выход, который тратит вход `i`). Подпись покрывает все
+    /// входы, все выходы и срок действия, поэтому изменить в подписанной
+    /// транзакции ничего нельзя.
+    ///
+    /// Сумм тратимых выходов в байтах транзакции нет: кошелёк узнаёт их у
+    /// узла. Раз они подписаны, узлу не нужно верить. Если он занизил сумму
+    /// входа, кошелёк подпишет не те суммы, и сеть отвергнет подпись, а не
+    /// заберёт разницу в комиссию майнеру (как BIP143 в Bitcoin).
+    pub fn sighash(&self, spent: &[TxOut]) -> Hash {
+        assert_eq!(spent.len(), self.inputs.len(), "нужен ровно один тратимый выход на каждый вход");
         let mut w = Writer::default();
         self.write(&mut w, false);
+        for output in spent {
+            w.u64(output.amount);
+            w.raw(&output.owner);
+        }
         crypto::hash(&w.bytes)
     }
 
     /// Подписать все входы одним ключом (кошелёк minicoin — один ключ).
-    pub fn sign(&mut self, seed: &Seed) {
-        let signature = crypto::sign(seed, &self.sighash());
+    /// `spent` — выходы, которые тратят входы, по порядку (см. `sighash`).
+    pub fn sign(&mut self, seed: &Seed, spent: &[TxOut]) {
+        let signature = crypto::sign(seed, &self.sighash(spent));
         for input in &mut self.inputs {
             input.signature = signature;
         }
@@ -168,11 +181,26 @@ mod tests {
     #[test]
     fn signature_changes_txid_but_not_sighash() {
         let seed = crypto::new_seed();
+        let spent = [TxOut { amount: 7, owner: crypto::public_key(&seed) }];
         let mut tx = sample();
-        let (txid, sighash) = (tx.txid(), tx.sighash());
-        tx.sign(&seed);
+        let (txid, sighash) = (tx.txid(), tx.sighash(&spent));
+        tx.sign(&seed, &spent);
         assert_ne!(tx.txid(), txid);
-        assert_eq!(tx.sighash(), sighash);
+        assert_eq!(tx.sighash(&spent), sighash);
         assert!(crypto::verify(&crypto::public_key(&seed), &sighash, &tx.inputs[0].signature));
+    }
+
+    #[test]
+    fn signature_covers_spent_outputs() {
+        let seed = crypto::new_seed();
+        let key = crypto::public_key(&seed);
+        let spent = [TxOut { amount: 7, owner: key }];
+        let mut tx = sample();
+        tx.sign(&seed, &spent);
+        let verify = |spent: &[TxOut]| crypto::verify(&key, &tx.sighash(spent), &tx.inputs[0].signature);
+        assert!(verify(&spent));
+        // Та же транзакция, но узел назвал другую сумму или другого владельца входа.
+        assert!(!verify(&[TxOut { amount: 6, owner: key }]), "сумма подписана");
+        assert!(!verify(&[TxOut { amount: 7, owner: [2; 32] }]), "владелец подписан");
     }
 }

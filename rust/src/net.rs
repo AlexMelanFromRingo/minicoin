@@ -35,9 +35,12 @@ pub enum Message {
     },
     Block(Block),
     Tx(Transaction),
-    /// Запрос кошелька: непотраченные выходы ключа.
+    /// Запрос кошелька: непотраченные выходы ключа. Выходы, уже потраченные
+    /// транзакциями мемпула, узел показывает только с `include_mempool_spent`:
+    /// они нужны `bump`, чтобы узнать, что тратит застрявшая транзакция.
     GetUtxos {
         owner: PublicKey,
+        include_mempool_spent: bool,
     },
     Utxos {
         height: u32,
@@ -54,8 +57,8 @@ pub enum Message {
     GetMempoolTx {
         txid: Hash,
     },
-    /// Транзакция из мемпула и её комиссия. Комиссию кошелёк сам не посчитает:
-    /// входы уже потрачены в мемпуле, и узел их кошельку не показывает.
+    /// Транзакция из мемпула и её комиссия. Кошелёк этой комиссии не верит и
+    /// считает её сам по входам, сверенным с подписями (см. `wallet::bump_payment`).
     MempoolTx {
         fee: u64,
         tx: Transaction,
@@ -92,7 +95,10 @@ impl Message {
             }
             Message::Block(block) => w.raw(&block.to_bytes()),
             Message::Tx(tx) => tx.write_to(&mut w),
-            Message::GetUtxos { owner } => w.raw(owner),
+            Message::GetUtxos { owner, include_mempool_spent } => {
+                w.raw(owner);
+                w.u8(*include_mempool_spent as u8);
+            }
             Message::Utxos { height, utxos } => {
                 w.u32(*height);
                 w.u32(utxos.len() as u32);
@@ -127,7 +133,7 @@ impl Message {
             }
             3 => return Block::from_bytes(payload).map(Message::Block),
             4 => return Transaction::from_bytes(payload).map(Message::Tx),
-            5 => Message::GetUtxos { owner: r.array()? },
+            5 => Message::GetUtxos { owner: r.array()?, include_mempool_spent: r.u8()? != 0 },
             6 => {
                 let height = r.u32()?;
                 let mut utxos = Vec::new();
@@ -191,7 +197,7 @@ mod tests {
             Message::GetBlocks { locator: vec![[1; 32], [2; 32]] },
             Message::Block(consensus::genesis_block()),
             Message::Tx(consensus::genesis_block().txs[0].clone()),
-            Message::GetUtxos { owner: [4; 32] },
+            Message::GetUtxos { owner: [4; 32], include_mempool_spent: true },
             Message::Utxos { height: 3, utxos: vec![(OutPoint { txid: [5; 32], index: 1 }, entry)] },
             Message::GetBlock { height: 2 },
             Message::GetInfo,

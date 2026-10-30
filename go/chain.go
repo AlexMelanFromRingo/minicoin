@@ -304,8 +304,9 @@ func (c *Chain) CheckTx(tx *Transaction, height uint32) (uint64, error) {
 	if height > tx.ExpiryHeight {
 		return 0, errors.New("срок действия истёк (expiry_height)")
 	}
-	sighash := tx.Sighash()
-	var inputSum uint64
+	// Сначала находим все тратимые выходы: подпись покрывает их суммы и
+	// владельцев, поэтому sighash можно посчитать только после этого.
+	spent := make([]TxOut, 0, len(tx.Inputs))
 	for _, input := range tx.Inputs {
 		entry, ok := c.utxo[input.Prev]
 		if !ok {
@@ -314,11 +315,16 @@ func (c *Chain) CheckTx(tx *Transaction, height uint32) (uint64, error) {
 		if entry.Coinbase && satSub32(height, entry.Height) < CoinbaseMaturity {
 			return 0, errors.New("награда за блок ещё не созрела")
 		}
-		if !Verify(entry.Output.Owner, sighash, input.Signature) {
+		spent = append(spent, entry.Output)
+	}
+	sighash := tx.Sighash(spent)
+	var inputSum uint64
+	for i, input := range tx.Inputs {
+		if !Verify(spent[i].Owner, sighash, input.Signature) {
 			return 0, errors.New("неверная подпись")
 		}
 		var carry uint64
-		if inputSum, carry = bits.Add64(inputSum, entry.Output.Amount, 0); carry != 0 {
+		if inputSum, carry = bits.Add64(inputSum, spent[i].Amount, 0); carry != 0 {
 			return 0, errors.New("переполнение суммы входов")
 		}
 	}

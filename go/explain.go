@@ -93,8 +93,8 @@ func explainBlock(block *Block, height uint32) *explainer {
 		txid := tx.Txid()
 		e.note("txid = BLAKE3(байты транзакции) = " + ToHex(txid[:]))
 		if !tx.IsCoinbase() {
-			sighash := tx.Sighash()
-			e.note("sighash = BLAKE3(те же байты, подписи заменены нулями) = " + ToHex(sighash[:]))
+			// Тратимых выходов в блоке нет, поэтому значение sighash здесь не посчитать.
+			e.note("sighash = BLAKE3(эти байты с нулевыми подписями ‖ сумма и владелец каждого тратимого выхода)")
 		}
 	}
 
@@ -138,9 +138,13 @@ func Vectors() string {
 		},
 		ExpiryHeight: 100,
 	}
-	tx.Sign(seed)
-	sighash, txid := tx.Sighash(), tx.Txid()
+	// Вход тратит выход 0 coinbase генезиса как 50 монет на key:
+	// выходы 4 999 990 000 + комиссия 10 000 = 5 000 000 000.
+	spent := []TxOut{{Amount: 5_000_000_000, Owner: key}}
+	tx.Sign(seed, spent)
+	sighash, txid := tx.Sighash(spent), tx.Txid()
 	put("tx", ToHex(tx.Bytes()))
+	put("tx_spent_amount", fmt.Sprint(spent[0].Amount))
 	put("tx_sighash", ToHex(sighash[:]))
 	put("tx_txid", ToHex(txid[:]))
 

@@ -281,10 +281,11 @@ func (n *Node) handle(message Message) response {
 		resp.broadcast = m
 	case GetUtxos:
 		// Выходы, уже потраченные транзакциями мемпула, не показываем:
-		// иначе кошелёк попытается потратить их второй раз.
+		// иначе кошелёк попытается потратить их второй раз. Их просит
+		// только bump, чтобы узнать суммы входов застрявшей транзакции.
 		var utxos []Utxo
 		for _, u := range st.chain.UtxosOf(m.Owner) {
-			if !st.mempool.IsSpent(u.OutPoint) {
+			if m.IncludeMempoolSpent || !st.mempool.IsSpent(u.OutPoint) {
 				utxos = append(utxos, u)
 			}
 		}

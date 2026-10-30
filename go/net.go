@@ -48,9 +48,13 @@ type TxMsg struct {
 	Tx Transaction
 }
 
-// GetUtxos — запрос кошелька: непотраченные выходы ключа.
+// GetUtxos — запрос кошелька: непотраченные выходы ключа. Выходы, уже
+// потраченные транзакциями мемпула, узел показывает только с
+// IncludeMempoolSpent: они нужны bump, чтобы узнать, что тратит застрявшая
+// транзакция.
 type GetUtxos struct {
-	Owner PublicKey
+	Owner               PublicKey
+	IncludeMempoolSpent bool
 }
 
 type Utxos struct {
@@ -75,8 +79,8 @@ type GetMempoolTx struct {
 	Txid Hash
 }
 
-// MempoolTx — транзакция из мемпула и её комиссия. Комиссию кошелёк сам не
-// посчитает: входы уже потрачены в мемпуле, и узел их кошельку не показывает.
+// MempoolTx — транзакция из мемпула и её комиссия. Кошелёк этой комиссии не
+// верит и считает её сам по входам, сверенным с подписями (см. BumpPayment).
 type MempoolTx struct {
 	Fee uint64
 	Tx  Transaction
@@ -111,6 +115,11 @@ func payload(message Message) []byte {
 		m.Tx.Encode(&w)
 	case GetUtxos:
 		w.Raw(m.Owner[:])
+		if m.IncludeMempoolSpent {
+			w.U8(1)
+		} else {
+			w.U8(0)
+		}
 	case Utxos:
 		w.U32(m.Height)
 		w.U32(uint32(len(m.Utxos)))
@@ -179,6 +188,7 @@ func parse(kind byte, data []byte) (Message, error) {
 	case 5:
 		var m GetUtxos
 		r.Array(m.Owner[:])
+		m.IncludeMempoolSpent = r.U8() != 0
 		message = m
 	case 6:
 		m := Utxos{Height: r.U32()}

@@ -119,7 +119,7 @@ func run() error {
 			return err
 		}
 		owner := mc.PublicKeyOf(seed)
-		utxos, err := requestUtxos(nodeAddr, owner)
+		utxos, err := requestUtxos(nodeAddr, mc.GetUtxos{Owner: owner})
 		if err != nil {
 			return err
 		}
@@ -160,7 +160,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		utxos, err := requestUtxos(nodeAddr, mc.PublicKeyOf(seed))
+		utxos, err := requestUtxos(nodeAddr, mc.GetUtxos{Owner: mc.PublicKeyOf(seed)})
 		if err != nil {
 			return err
 		}
@@ -189,11 +189,11 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		// Комиссию из ответа узла не берём: кошелёк посчитает её сам.
 		var stuck mc.Transaction
-		var oldFee uint64
 		switch r := reply.(type) {
 		case mc.MempoolTx:
-			stuck, oldFee = r.Tx, r.Fee
+			stuck = r.Tx
 		case mc.Text:
 			return errors.New(r.Text)
 		default:
@@ -202,13 +202,19 @@ func run() error {
 		if stuck.Txid() != txid {
 			return errors.New("узел прислал не ту транзакцию")
 		}
-		newFee := mc.DefaultBumpFee(oldFee, stuck.Size())
+		// Входы застрявшей транзакции уже потрачены в мемпуле, поэтому просим и
+		// такие выходы. Суммам узла не верим: BumpPayment сверит их с подписями.
+		utxos, err := requestUtxos(nodeAddr, mc.GetUtxos{Owner: mc.PublicKeyOf(seed), IncludeMempoolSpent: true})
+		if err != nil {
+			return err
+		}
+		var fee uint64 // 0 — по умолчанию
 		if a.has("fee") {
-			if newFee, err = mc.ParseAmount(a.get("fee", "")); err != nil {
+			if fee, err = mc.ParseAmount(a.get("fee", "")); err != nil {
 				return err
 			}
 		}
-		tx, err := mc.BumpPayment(seed, stuck, oldFee, newFee)
+		tx, oldFee, newFee, err := mc.BumpPayment(seed, stuck, utxos.Utxos, fee)
 		if err != nil {
 			return err
 		}
@@ -275,8 +281,8 @@ func run() error {
 	return nil
 }
 
-func requestUtxos(node string, owner mc.PublicKey) (mc.Utxos, error) {
-	reply, err := mc.Request(node, mc.GetUtxos{Owner: owner})
+func requestUtxos(node string, request mc.GetUtxos) (mc.Utxos, error) {
+	reply, err := mc.Request(node, request)
 	if err != nil {
 		return mc.Utxos{}, err
 	}

@@ -62,13 +62,18 @@ func mustMine(t *testing.T, chain *Chain, txs []Transaction, to PublicKey) Chain
 	return update
 }
 
+// rewardOf — что тратит from, по его мнению: монеты в этих тестах — его награда за блок 1.
+func rewardOf(from miner) []TxOut {
+	return []TxOut{{Amount: BlockReward(1), Owner: from.key}}
+}
+
 func pay(from miner, prev OutPoint, amount uint64, to PublicKey) Transaction {
 	tx := Transaction{
 		Inputs:       []TxIn{{Prev: prev}},
 		Outputs:      []TxOut{{Amount: amount, Owner: to}},
 		ExpiryHeight: 1000,
 	}
-	tx.Sign(from.seed)
+	tx.Sign(from.seed, rewardOf(from))
 	return tx
 }
 
@@ -140,8 +145,26 @@ func TestRejectsInvalidSpends(t *testing.T) {
 	// Истёкшая.
 	expired := pay(alice, coin, 1, bob.key)
 	expired.ExpiryHeight = h - 1
-	expired.Sign(alice.seed)
+	expired.Sign(alice.seed, rewardOf(alice))
 	check(expired, "срок")
+}
+
+func TestRejectsSignatureOverWrongAmount(t *testing.T) {
+	easyMining(t)
+	alice, bob := newMiner(), newMiner()
+	chain, coin := chainWithCoins(t, alice)
+	h := chain.Height() + 1
+	honest := pay(alice, coin, Coin, bob.key)
+	if fee, err := chain.CheckTx(&honest, h); err != nil || fee != BlockReward(1)-Coin {
+		t.Fatalf("честный платёж: комиссия %d, %v", fee, err)
+	}
+	// Узел соврал кошельку, что вход меньше на монету, и кошелёк подписал
+	// эту сумму. Сеть такую подпись отвергает: деньги, которые кошелёк
+	// недосчитал, не уйдут майнеру в комиссию.
+	tx := pay(alice, coin, Coin, bob.key)
+	tx.Sign(alice.seed, []TxOut{{Amount: BlockReward(1) - Coin, Owner: alice.key}})
+	_, err := chain.CheckTx(&tx, h)
+	expectInvalid(t, err, "неверная подпись")
 }
 
 func TestDoubleSpendInOneBlockIsRejected(t *testing.T) {

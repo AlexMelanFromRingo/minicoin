@@ -124,17 +124,32 @@ func (tx *Transaction) Txid() Hash {
 }
 
 // Sighash — то, что подписывают владельцы входов: хеш транзакции с
-// обнулёнными подписями. Подпись покрывает все входы, все выходы и срок
-// действия, поэтому изменить в подписанной транзакции ничего нельзя.
-func (tx *Transaction) Sighash() Hash {
+// обнулёнными подписями, а за ним сумма и владелец каждого тратимого выхода
+// (spent[i] — выход, который тратит вход i). Подпись покрывает все входы,
+// все выходы и срок действия, поэтому изменить в подписанной транзакции
+// ничего нельзя.
+//
+// Сумм тратимых выходов в байтах транзакции нет: кошелёк узнаёт их у узла.
+// Раз они подписаны, узлу не нужно верить. Если он занизил сумму входа,
+// кошелёк подпишет не те суммы, и сеть отвергнет подпись, а не заберёт
+// разницу в комиссию майнеру (как BIP143 в Bitcoin).
+func (tx *Transaction) Sighash(spent []TxOut) Hash {
+	if len(spent) != len(tx.Inputs) {
+		panic("нужен ровно один тратимый выход на каждый вход")
+	}
 	var w Writer
 	tx.write(&w, false)
+	for _, output := range spent {
+		w.U64(output.Amount)
+		w.Raw(output.Owner[:])
+	}
 	return HashOf(w.Bytes)
 }
 
 // Sign подписывает все входы одним ключом (кошелёк minicoin — один ключ).
-func (tx *Transaction) Sign(seed Seed) {
-	signature := Sign(seed, tx.Sighash())
+// spent — выходы, которые тратят входы, по порядку (см. Sighash).
+func (tx *Transaction) Sign(seed Seed, spent []TxOut) {
+	signature := Sign(seed, tx.Sighash(spent))
 	for i := range tx.Inputs {
 		tx.Inputs[i].Signature = signature
 	}

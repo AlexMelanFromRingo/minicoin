@@ -3,6 +3,7 @@ package minicoin
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -58,9 +59,12 @@ func TestBumpTakesExtraFeeFromChange(t *testing.T) {
 		t.Fatal("минимум по правилу замены")
 	}
 
-	bumped, err := BumpPayment(seed, stuck, 200, fee)
+	bumped, oldFee, newFee, err := BumpPayment(seed, stuck, utxos, 0)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if oldFee != 200 || newFee != fee {
+		t.Fatalf("старую комиссию кошелёк считает сам: %d → %d", oldFee, newFee)
 	}
 	if bumped.Inputs[0].Prev != stuck.Inputs[0].Prev {
 		t.Fatal("те же входы — иначе это не замена")
@@ -74,15 +78,19 @@ func TestBumpTakesExtraFeeFromChange(t *testing.T) {
 	if bumped.Inputs[0].Signature == stuck.Inputs[0].Signature {
 		t.Fatal("подпись новая")
 	}
+	spent := []TxOut{utxos[0].Entry.Output}
+	if !Verify(PublicKeyOf(seed), bumped.Sighash(spent), bumped.Inputs[0].Signature) {
+		t.Fatal("замена подписана не над теми входами")
+	}
 
-	if _, err := BumpPayment(seed, stuck, 200, 100); err == nil {
+	if _, _, _, err := BumpPayment(seed, stuck, utxos, 100); err == nil {
 		t.Fatal("комиссия меньше старой")
 	}
-	if _, err := BumpPayment(seed, stuck, 200, 7*Coin); err == nil {
+	if _, _, _, err := BumpPayment(seed, stuck, utxos, 7*Coin); err == nil {
 		t.Fatal("сдачи не хватает")
 	}
 	// Вся сдача в комиссию: выход сдачи исчезает.
-	allIn, err := BumpPayment(seed, stuck, 200, 6*Coin)
+	allIn, _, _, err := BumpPayment(seed, stuck, utxos, 6*Coin)
 	if err != nil || len(allIn.Outputs) != 1 {
 		t.Fatalf("вся сдача в комиссию: %+v, %v", allIn.Outputs, err)
 	}
@@ -95,13 +103,35 @@ func TestBumpRefusesTransactionItDidNotSign(t *testing.T) {
 	// Узел подменил получателя: наши входы, но деньги — ему.
 	forged := stuck
 	forged.Outputs = []TxOut{{Amount: stuck.Outputs[0].Amount, Owner: filled[PublicKey](66)}, stuck.Outputs[1]}
-	if _, err := BumpPayment(seed, forged, 200, 400); err == nil {
+	if _, _, _, err := BumpPayment(seed, forged, utxos, 400); err == nil {
 		t.Fatal("переподписана подменённая транзакция")
 	}
 	// Чужая транзакция целиком: подписи не нашим ключом.
 	stranger, _ := BuildPayment(NewSeed(), utxos, 100, filled[PublicKey](9), Coin, 200)
-	if _, err := BumpPayment(seed, stranger, 200, 400); err == nil {
+	if _, _, _, err := BumpPayment(seed, stranger, utxos, 400); err == nil {
 		t.Fatal("переподписана чужая транзакция")
+	}
+	// Узел не показал, что тратит транзакция.
+	if _, _, _, err := BumpPayment(seed, stuck, nil, 400); err == nil || !strings.Contains(err.Error(), "не прислал вход") {
+		t.Fatalf("вход не найден, а ошибка %v", err)
+	}
+}
+
+func TestBumpRefusesWhenNodeLiesAboutInputAmount(t *testing.T) {
+	seed := NewSeed()
+	utxos := []Utxo{coin(10*Coin, 1, false, 1)}
+	stuck, _ := BuildPayment(seed, utxos, 100, filled[PublicKey](9), 4*Coin, 200)
+	// Узел занизил вход на монету. Поверь кошелёк — он решил бы, что старая
+	// комиссия на монету меньше, и переплатил бы. Но подпись не сходится.
+	lied := []Utxo{coin(9*Coin, 1, false, 1)}
+	if _, _, _, err := BumpPayment(seed, stuck, lied, 0); err == nil || !strings.Contains(err.Error(), "подписи не сходятся") {
+		t.Fatalf("заниженная сумма входа принята: %v", err)
+	}
+	// Чужой владелец входа тоже не проходит.
+	foreign := []Utxo{coin(10*Coin, 1, false, 1)}
+	foreign[0].Entry.Output.Owner = filled[PublicKey](7)
+	if _, _, _, err := BumpPayment(seed, stuck, foreign, 0); err == nil {
+		t.Fatal("подменённый владелец входа принят")
 	}
 }
 

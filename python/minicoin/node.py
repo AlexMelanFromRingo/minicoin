@@ -146,9 +146,14 @@ class Node:
                         response.broadcast = TxMsg(tx)
                     except Invalid as e:
                         response.reply.append(Text(f"отклонена: {e}"))
-                case GetUtxos(owner):
+                case GetUtxos(owner, include_mempool_spent):
                     # Потраченные в мемпуле не показываем, иначе кошелёк потратит их снова.
-                    utxos = [(op, e) for op, e in chain.utxos_of(owner) if not self.mempool.is_spent(op)]
+                    # Их просит только bump, чтобы узнать суммы входов застрявшей транзакции.
+                    utxos = [
+                        (op, e)
+                        for op, e in chain.utxos_of(owner)
+                        if include_mempool_spent or not self.mempool.is_spent(op)
+                    ]
                     response.reply.append(Utxos(chain.height(), utxos))
                 case GetBlock(height):
                     found = chain.block_at(height)

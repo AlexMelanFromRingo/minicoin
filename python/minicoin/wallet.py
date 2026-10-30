@@ -65,11 +65,12 @@ def build_payment(
         key=lambda item: item[1].output.amount,
         reverse=True,
     )
-    inputs, total = [], 0
+    inputs, spent, total = [], [], 0
     for outpoint, entry in spendable:
         if total >= need:
             break
         inputs.append(TxIn(outpoint))
+        spent.append(entry.output)
         total += entry.output.amount
     if total < need:
         raise ValueError(f"недостаточно средств: доступно {format_amount(total)}, нужно {format_amount(need)}")
@@ -78,7 +79,7 @@ def build_payment(
     if total > need:
         outputs.append(TxOut(total - need, crypto.public_key(seed)))
     tx = Transaction(inputs, outputs, next_height + EXPIRY_WINDOW)
-    tx.sign(seed)
+    tx.sign(seed, spent)  # суммы входов подписаны: если узел их занизил, подпись выйдет неверной
     return tx
 
 
@@ -89,18 +90,42 @@ def default_bump_fee(old_fee: int, size: int) -> int:
     return max(old_fee * 2, old_fee + MIN_FEE_RATE * size)
 
 
-def bump_payment(seed: bytes, stuck: Transaction, old_fee: int, new_fee: int) -> Transaction:
+def bump_payment(
+    seed: bytes,
+    stuck: Transaction,
+    utxos: list[tuple[OutPoint, UtxoEntry]],
+    new_fee: int | None = None,
+) -> tuple[Transaction, int, int]:
     """Замена застрявшего платежа (replace-by-fee): те же входы и получатель,
-    прибавка к комиссии берётся из сдачи."""
+    прибавка к комиссии берётся из сдачи.
+
+    utxos — выходы кошелька от узла, включая уже потраченные в мемпуле (среди
+    них — входы stuck). new_fee = None — комиссия по умолчанию. Возвращает
+    замену, старую и новую комиссии."""
+    # Узлу не доверяем. Он мог прислать чужую транзакцию, которая тратит наши
+    # выходы на его адрес, или занизить суммы входов, чтобы мы переплатили
+    # комиссию. Подпись покрывает все выходы и суммы с владельцами входов
+    # (sighash), поэтому переподписываем, только если все подписи сходятся
+    # с тем, что прислал узел: значит, это наша транзакция, и суммы входов
+    # те самые, что мы подписывали.
+    me = crypto.public_key(seed)
+    known = dict(utxos)
+    spent = []
+    for i in stuck.inputs:
+        if i.prev not in known:
+            raise ValueError(f"узел не прислал вход {i.prev.txid.hex()}:{i.prev.index} — заменять не буду")
+        spent.append(known[i.prev].output)
+    sighash = stuck.sighash(spent)
+    if not stuck.inputs or not all(crypto.verify(me, sighash, i.signature) for i in stuck.inputs):
+        raise ValueError("подписи не сходятся: узел прислал не ту транзакцию или неверные суммы входов")
+    # Комиссию считаем сами: суммы входов теперь проверены подписями.
+    old_fee = sum(out.amount for out in spent) - stuck.output_sum()
+    if old_fee < 0:
+        raise ValueError("суммы входов и выходов не сходятся")
+    if new_fee is None:
+        new_fee = default_bump_fee(old_fee, stuck.size())
     if new_fee <= old_fee:
         raise ValueError(f"новая комиссия должна быть больше старой ({format_amount(old_fee)})")
-    # Узлу не доверяем: он мог прислать чужую транзакцию, которая тратит наши
-    # выходы на его адрес. Переподписываем только то, что уже подписали сами:
-    # подпись покрывает все выходы (sighash), значит, получатель и суммы те же.
-    me = crypto.public_key(seed)
-    sighash = stuck.sighash()
-    if not stuck.inputs or not all(crypto.verify(me, sighash, i.signature) for i in stuck.inputs):
-        raise ValueError("эту транзакцию подписывал не этот кошелёк — заменять не буду")
     tx = Transaction([TxIn(i.prev) for i in stuck.inputs], [TxOut(o.amount, o.owner) for o in stuck.outputs], stuck.expiry_height)
     mine = [i for i, out in enumerate(tx.outputs) if out.owner == me]
     if not mine or len(tx.outputs) < 2:
@@ -114,8 +139,8 @@ def bump_payment(seed: bytes, stuck: Transaction, old_fee: int, new_fee: int) ->
         raise ValueError(
             f"сдачи {format_amount(tx.outputs[change].amount)} не хватает на прибавку к комиссии {format_amount(extra)}"
         )
-    tx.sign(seed)
-    return tx
+    tx.sign(seed, spent)
+    return tx, old_fee, new_fee
 
 
 def request(node: str, msg: net.Message) -> net.Message:

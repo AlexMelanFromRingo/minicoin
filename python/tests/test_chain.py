@@ -46,9 +46,14 @@ def mine(chain: Chain, txs: list[Transaction], to: bytes) -> ChainUpdate:
     return chain.add_block(make_block(chain, chain.tip(), txs, to), NOW)
 
 
+def reward_of(sender: Miner) -> list[TxOut]:
+    """Что тратит sender, по его мнению: монеты в этих тестах — его награда за блок 1."""
+    return [TxOut(consensus.block_reward(1), sender.key)]
+
+
 def pay(sender: Miner, prev: OutPoint, amount: int, to: bytes) -> Transaction:
     tx = Transaction([TxIn(prev)], [TxOut(amount, to)], 1000)
-    tx.sign(sender.seed)
+    tx.sign(sender.seed, reward_of(sender))
     return tx
 
 
@@ -90,6 +95,20 @@ def test_rejects_invalid_spends():
     tampered.outputs[0].owner = alice.key
     with pytest.raises(Invalid, match="подпись"):
         chain.check_tx(tampered, h)
+
+
+def test_rejects_signature_over_wrong_amount():
+    alice, bob = Miner(), Miner()
+    chain, coin = chain_with_coins(alice)
+    h = chain.height() + 1
+    assert chain.check_tx(pay(alice, coin, COIN, bob.key), h) == consensus.block_reward(1) - COIN
+    # Узел соврал кошельку, что вход меньше на монету, и кошелёк подписал
+    # эту сумму. Сеть такую подпись отвергает: деньги, которые кошелёк
+    # недосчитал, не уйдут майнеру в комиссию.
+    tx = pay(alice, coin, COIN, bob.key)
+    tx.sign(alice.seed, [TxOut(consensus.block_reward(1) - COIN, alice.key)])
+    with pytest.raises(Invalid, match="неверная подпись"):
+        chain.check_tx(tx, h)
 
 
 def test_double_spend_in_one_block_is_rolled_back():
@@ -161,7 +180,7 @@ def test_mempool_replaces_stuck_payment():
 
     def payment(fee: int) -> Transaction:
         tx = Transaction([TxIn(coin)], [TxOut(10 * COIN, bob.key), TxOut(reward - 10 * COIN - fee, alice.key)], 1000)
-        tx.sign(alice.seed)
+        tx.sign(alice.seed, reward_of(alice))
         return tx
 
     cheap = payment(fee=200)

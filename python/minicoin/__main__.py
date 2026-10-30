@@ -94,9 +94,14 @@ def run(args: argparse.Namespace, wallet_path: Path, node_addr: str) -> None:
             assert isinstance(reply, net.MempoolTx), reply
             if reply.tx.txid() != bytes.fromhex(args.txid):
                 raise ValueError("узел прислал не ту транзакцию")
-            new_fee = wallet.parse_amount(args.fee) if args.fee else wallet.default_bump_fee(reply.fee, reply.tx.size())
-            tx = wallet.bump_payment(seed, reply.tx, reply.fee, new_fee)
-            print(f"комиссия: {wallet.format_amount(reply.fee)} → {wallet.format_amount(new_fee)}")
+            # reply.fee не берём: кошелёк посчитает комиссию сам. Входы застрявшей
+            # транзакции уже потрачены в мемпуле, поэтому просим и такие выходы;
+            # суммам узла не верим — bump_payment сверит их с подписями.
+            utxos = wallet.request(node_addr, net.GetUtxos(crypto.public_key(seed), include_mempool_spent=True))
+            assert isinstance(utxos, net.Utxos), utxos
+            fee = wallet.parse_amount(args.fee) if args.fee else None
+            tx, old_fee, new_fee = wallet.bump_payment(seed, reply.tx, utxos.utxos, fee)
+            print(f"комиссия: {wallet.format_amount(old_fee)} → {wallet.format_amount(new_fee)}")
             print(f"txid: {tx.txid().hex()}")
             answer = wallet.request(node_addr, net.TxMsg(tx))
             print(f"узел: {answer.text if isinstance(answer, net.Text) else answer}")

@@ -7,7 +7,7 @@ from minicoin import address, consensus, crypto
 from minicoin import block as blk
 from minicoin.block import Block
 from minicoin.explain import test_vectors as generate_vectors
-from minicoin.tx import Transaction
+from minicoin.tx import Transaction, TxOut
 
 VECTORS = Path(__file__).resolve().parents[2] / "vectors.txt"
 
@@ -29,7 +29,9 @@ def test_parse_rust_bytes():
 
     tx = Transaction.from_bytes(bytes.fromhex(v["tx"]))
     assert tx.txid().hex() == v["tx_txid"]
-    assert crypto.verify(bytes.fromhex(v["public_key"]), tx.sighash(), tx.inputs[0].signature)
+    spent = [TxOut(int(v["tx_spent_amount"]), bytes.fromhex(v["public_key"]))]
+    assert tx.sighash(spent).hex() == v["tx_sighash"]
+    assert crypto.verify(bytes.fromhex(v["public_key"]), tx.sighash(spent), tx.inputs[0].signature)
 
     block1 = Block.from_bytes(bytes.fromhex(v["block1"]))
     assert block1.hash().hex() == v["block1_hash"]

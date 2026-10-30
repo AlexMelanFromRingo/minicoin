@@ -98,7 +98,8 @@ pub fn explain_block(block: &Block, height: u32) -> String {
         e.field(&tx.expiry_height.to_le_bytes(), "expiry_height", &expiry);
         e.note(&format!("txid = BLAKE3(байты транзакции) = {}", to_hex(&tx.txid())));
         if !tx.is_coinbase() {
-            e.note(&format!("sighash = BLAKE3(те же байты, подписи заменены нулями) = {}", to_hex(&tx.sighash())));
+            // Тратимых выходов в блоке нет, поэтому значение sighash здесь не посчитать.
+            e.note("sighash = BLAKE3(эти байты с нулевыми подписями ‖ сумма и владелец каждого тратимого выхода)");
         }
     }
 
@@ -142,9 +143,13 @@ pub fn test_vectors() -> String {
         ],
         expiry_height: 100,
     };
-    tx.sign(&seed);
+    // Вход тратит выход 0 coinbase генезиса как 50 монет на `key`:
+    // выходы 4 999 990 000 + комиссия 10 000 = 5 000 000 000.
+    let spent = [TxOut { amount: 5_000_000_000, owner: key }];
+    tx.sign(&seed, &spent);
     put("tx", to_hex(&tx.to_bytes()));
-    put("tx_sighash", to_hex(&tx.sighash()));
+    put("tx_spent_amount", spent[0].amount.to_string());
+    put("tx_sighash", to_hex(&tx.sighash(&spent)));
     put("tx_txid", to_hex(&tx.txid()));
 
     let leaves: Vec<_> = [b"a", b"b", b"c", b"d", b"e"].iter().map(|x| crypto::hash(*x)).collect();

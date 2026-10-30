@@ -14,7 +14,7 @@ func TestMessagesRoundtrip(t *testing.T) {
 		GetBlocks{Locator: []Hash{filled[Hash](1), filled[Hash](2)}},
 		BlockMsg{genesis},
 		TxMsg{genesis.Txs[0]},
-		GetUtxos{Owner: filled[PublicKey](4)},
+		GetUtxos{Owner: filled[PublicKey](4), IncludeMempoolSpent: true},
 		Utxos{Height: 3, Utxos: []Utxo{{OutPoint{Txid: filled[Hash](5), Index: 1}, entry}}},
 		GetBlock{Height: 2},
 		GetInfo{},
