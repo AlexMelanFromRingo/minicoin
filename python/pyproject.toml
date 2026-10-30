@@ -1,0 +1,21 @@
+[project]
+name = "minicoin"
+version = "0.1.0"
+description = "Минимальная, но настоящая криптовалюта — Python-реализация протокола minicoin"
+requires-python = ">=3.10"
+license = "MIT"
+# Только криптографические примитивы, как и в Rust-версии.
+dependencies = ["blake3>=0.4", "pynacl>=1.5"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+minicoin-py = "minicoin.__main__:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["minicoin"]

@@ -1,0 +1,23 @@
+# CI: обе реализации проходят свои тесты и выдают одинаковые векторы.
+name: ci
+on: [push, pull_request]
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: rust } }
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: cargo run --quiet --locked -- vectors | diff -u ../vectors.txt -
+  python:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: python } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e '.[dev]'
+      - run: pytest -q
+      - run: python -m minicoin vectors | diff -u ../vectors.txt -

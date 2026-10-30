@@ -1,0 +1,16 @@
+[package]
+name = "minicoin"
+version = "0.1.0"
+edition = "2024"
+description = "Минимальная, но настоящая криптовалюта: UTXO, PoW, P2P — в одном читаемом крейте"
+license = "MIT"
+
+# Только криптографические примитивы. Всё, что и есть криптовалюта
+# (формат байтов, UTXO, валидация, PoW, сложность, сеть), написано здесь.
+[dependencies]
+blake3 = "1"
+ed25519-dalek = "2"
+getrandom = "0.2"
+
+[profile.test]
+opt-level = 2

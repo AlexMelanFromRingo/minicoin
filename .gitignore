@@ -1,0 +1,7 @@
+rust/target/
+python/.venv/
+__pycache__/
+*.egg-info/
+data/
+*.key
+.pytest_cache/
