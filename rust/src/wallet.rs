@@ -9,6 +9,7 @@
 //! было труднее связать между собой.
 
 use std::fs;
+use std::io::Write;
 use std::net::TcpStream;
 use std::path::Path;
 use std::time::Duration;
@@ -23,11 +24,16 @@ use crate::tx::{OutPoint, Transaction, TxIn, TxOut};
 pub const EXPIRY_WINDOW: u32 = 100;
 
 pub fn create(path: &Path) -> Result<PublicKey, String> {
-    if path.exists() {
-        return Err(format!("{} уже существует, не перезаписываю", path.display()));
-    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true); // существующий кошелёк не перезаписываем
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600); // читать ключ может только владелец
+    let mut file = options.open(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => format!("{} уже существует, не перезаписываю", path.display()),
+        _ => format!("{}: {e}", path.display()),
+    })?;
     let seed = crypto::new_seed();
-    fs::write(path, crypto::to_hex(&seed) + "\n").map_err(|e| e.to_string())?;
+    file.write_all((crypto::to_hex(&seed) + "\n").as_bytes()).map_err(|e| e.to_string())?;
     Ok(crypto::public_key(&seed))
 }
 
@@ -98,7 +104,14 @@ pub fn bump_payment(seed: &Seed, stuck: &Transaction, old_fee: u64, new_fee: u64
     if new_fee <= old_fee {
         return Err(format!("новая комиссия должна быть больше старой ({})", format_amount(old_fee)));
     }
+    // Узлу не доверяем: он мог прислать чужую транзакцию, которая тратит наши
+    // выходы на его адрес. Переподписываем только то, что уже подписали сами:
+    // подпись покрывает все выходы (sighash), значит, получатель и суммы те же.
     let me = crypto::public_key(seed);
+    let sighash = stuck.sighash();
+    if stuck.inputs.is_empty() || !stuck.inputs.iter().all(|i| crypto::verify(&me, &sighash, &i.signature)) {
+        return Err("эту транзакцию подписывал не этот кошелёк — заменять не буду".into());
+    }
     let mut tx = stuck.clone();
     let extra = new_fee - old_fee;
     let change = match tx.outputs.iter().rposition(|o| o.owner == me) {
@@ -208,6 +221,35 @@ mod tests {
         // Вся сдача в комиссию: выход сдачи исчезает.
         let all_in = bump_payment(&seed, &stuck, 200, 6 * COIN).unwrap();
         assert_eq!(all_in.outputs.len(), 1);
+    }
+
+    #[test]
+    fn bump_refuses_transaction_it_did_not_sign() {
+        let seed = crypto::new_seed();
+        let utxos = vec![coin(10 * COIN, 1, false, 1)];
+        let stuck = build_payment(&seed, &utxos, 100, [9; 32], 4 * COIN, 200).unwrap();
+        // Узел подменил получателя: наши входы, но деньги — ему.
+        let mut forged = stuck.clone();
+        forged.outputs[0].owner = [66; 32];
+        assert!(bump_payment(&seed, &forged, 200, 400).is_err());
+        // Чужая транзакция целиком: подписи не нашим ключом.
+        let stranger = build_payment(&crypto::new_seed(), &utxos, 100, [9; 32], COIN, 200).unwrap();
+        assert!(bump_payment(&seed, &stranger, 200, 400).is_err());
+    }
+
+    #[test]
+    fn wallet_file_is_private_and_never_overwritten() {
+        let path = std::env::temp_dir().join(format!("minicoin-test-{}.key", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let key = create(&path).unwrap();
+        assert_eq!(crypto::public_key(&load(&path).unwrap()), key);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        assert!(create(&path).is_err(), "второй create не должен затереть ключ");
+        fs::remove_file(&path).unwrap();
     }
 
     #[test]

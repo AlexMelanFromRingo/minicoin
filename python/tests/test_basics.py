@@ -82,3 +82,36 @@ def test_bump_takes_extra_fee_from_change():
     with pytest.raises(ValueError):
         bump_payment(seed, stuck, 200, 7 * COIN)
     assert len(bump_payment(seed, stuck, 200, 6 * COIN).outputs) == 1
+
+
+def test_bump_refuses_transaction_it_did_not_sign():
+    from minicoin import crypto
+    from minicoin.wallet import build_payment, bump_payment
+
+    seed = crypto.new_seed()
+    utxos = [(OutPoint(bytes([1] * 32), 0), UtxoEntry(TxOut(10 * COIN, bytes(32)), 1, False))]
+    stuck = build_payment(seed, utxos, 100, bytes([9] * 32), 4 * COIN, 200)
+    # Узел подменил получателя: наши входы, но деньги — ему.
+    forged = Transaction.from_bytes(stuck.to_bytes())
+    forged.outputs[0].owner = bytes([66] * 32)
+    with pytest.raises(ValueError):
+        bump_payment(seed, forged, 200, 400)
+    # Чужая транзакция целиком: подписи не нашим ключом.
+    stranger = build_payment(crypto.new_seed(), utxos, 100, bytes([9] * 32), COIN, 200)
+    with pytest.raises(ValueError):
+        bump_payment(seed, stranger, 200, 400)
+
+
+def test_wallet_file_is_private_and_never_overwritten(tmp_path):
+    import os
+    import stat
+
+    from minicoin import crypto, wallet
+
+    path = tmp_path / "w.key"
+    key = wallet.create(path)
+    assert crypto.public_key(wallet.load(path)) == key
+    if os.name == "posix":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    with pytest.raises(ValueError):
+        wallet.create(path)

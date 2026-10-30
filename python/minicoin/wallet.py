@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import socket
 from pathlib import Path
@@ -23,10 +24,14 @@ EXPIRY_WINDOW = 100  # через сколько блоков неподтвер
 
 
 def create(path: Path) -> bytes:
-    if path.exists():
-        raise ValueError(f"{path} уже существует, не перезаписываю")
+    # O_EXCL: существующий кошелёк не перезаписываем; 0o600: читать ключ может только владелец.
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        raise ValueError(f"{path} уже существует, не перезаписываю") from None
     seed = crypto.new_seed()
-    path.write_text(seed.hex() + "\n")
+    with os.fdopen(fd, "w") as f:
+        f.write(seed.hex() + "\n")
     return crypto.public_key(seed)
 
 
@@ -89,7 +94,13 @@ def bump_payment(seed: bytes, stuck: Transaction, old_fee: int, new_fee: int) ->
     прибавка к комиссии берётся из сдачи."""
     if new_fee <= old_fee:
         raise ValueError(f"новая комиссия должна быть больше старой ({format_amount(old_fee)})")
+    # Узлу не доверяем: он мог прислать чужую транзакцию, которая тратит наши
+    # выходы на его адрес. Переподписываем только то, что уже подписали сами:
+    # подпись покрывает все выходы (sighash), значит, получатель и суммы те же.
     me = crypto.public_key(seed)
+    sighash = stuck.sighash()
+    if not stuck.inputs or not all(crypto.verify(me, sighash, i.signature) for i in stuck.inputs):
+        raise ValueError("эту транзакцию подписывал не этот кошелёк — заменять не буду")
     tx = Transaction([TxIn(i.prev) for i in stuck.inputs], [TxOut(o.amount, o.owner) for o in stuck.outputs], stuck.expiry_height)
     mine = [i for i, out in enumerate(tx.outputs) if out.owner == me]
     if not mine or len(tx.outputs) < 2:

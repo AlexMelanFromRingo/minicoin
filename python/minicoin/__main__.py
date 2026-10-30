@@ -92,6 +92,8 @@ def run(args: argparse.Namespace, wallet_path: Path, node_addr: str) -> None:
             if isinstance(reply, net.Text):
                 raise ValueError(reply.text)
             assert isinstance(reply, net.MempoolTx), reply
+            if reply.tx.txid() != bytes.fromhex(args.txid):
+                raise ValueError("узел прислал не ту транзакцию")
             new_fee = wallet.parse_amount(args.fee) if args.fee else wallet.default_bump_fee(reply.fee, reply.tx.size())
             tx = wallet.bump_payment(seed, reply.tx, reply.fee, new_fee)
             print(f"комиссия: {wallet.format_amount(reply.fee)} → {wallet.format_amount(new_fee)}")

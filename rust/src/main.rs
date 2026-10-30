@@ -139,6 +139,9 @@ fn run() -> Result<(), String> {
                 Message::Text(text) => return Err(text),
                 other => return Err(format!("неожиданный ответ узла: {other:?}")),
             };
+            if stuck.txid() != txid {
+                return Err("узел прислал не ту транзакцию".into());
+            }
             let new_fee = match args.options.get("fee") {
                 Some(_) => wallet::parse_amount(&args.get("fee", ""))?,
                 None => wallet::default_bump_fee(old_fee, stuck.size()),
